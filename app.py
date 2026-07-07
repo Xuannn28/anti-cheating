@@ -45,7 +45,7 @@ async def eye_analyzer(file: UploadFile = File(...)):
         frame = cv2.resize(frame, (640, 480))
 
         # pipe matrix array into tracker engine 
-        result = tracker.track_eyes(frame)
+        result = eye_tracker.track_eyes(frame)
 
         return {"success": True, 
                 "data": result}

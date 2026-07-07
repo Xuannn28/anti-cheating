@@ -2,12 +2,13 @@
 import os 
 import torch 
 import numpy as np
+from config import APP_CONFIG
 from pydub import AudioSegment
 from faster_whisper import WhisperModel  # OpenAI speech2text model
 from transformers import GPT2LMHeadModel, GPT2Tokenizer # OpenAI GPT-2 language model
 
 class AudioTracker: 
-    def __init__(self):
+    def __init__(self, config):
         # initialize speech2text model 
         self.stt_model = WhisperModel("base", device="cpu", compute_type="float32")
 
@@ -15,6 +16,11 @@ class AudioTracker:
         self.tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
         self.perplexity_model = GPT2LMHeadModel.from_pretrained("gpt2")
         self.perplexity_model.eval()
+
+        # load configuration details
+        self.config = config 
+        self.ppl_threshold = config['detection']['audio']['perplexity_threshold']
+        self.min_w_count = config['detection']['audio']['min_word_count']
 
     def _convert_to_wav(self, input_path, output_path="processed_audio.wav"):
         """Standardizes input audio into 16kHz Mono WAV format for AI model later."""
@@ -38,7 +44,7 @@ class AudioTracker:
             segments, _ = self.stt_model.transcribe(temp_wav, beam_size=5, vad_filter=True)
             transcript = " ".join([segment.text for segment in segments]).strip()
 
-            if not transcript or len(transcript.split()) < 5: 
+            if not transcript or len(transcript.split()) < self.min_w_count: 
                 return {
                     "transcript": transcript, 
                     "perplexity": 0.0, 
@@ -61,7 +67,7 @@ class AudioTracker:
 
             # Determine if text patterns match predictable AI generation structures
             # low value = model easily predict the token, less surprised
-            is_ai = perplexity < 45.0
+            is_ai = perplexity < self.ppl_threshold
             
             return {
                 "transcript": transcript,
