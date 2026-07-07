@@ -1,9 +1,11 @@
+import os
 import cv2 
 import numpy as np 
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 
 from eye_tracker import EyeTracker
+from audio_tracker import AudioTracker
 from config import APP_CONFIG
 
 # initialize web service 
@@ -19,10 +21,11 @@ app.add_middleware(
 )
 
 # initialize engine 
-tracker = EyeTracker(config=APP_CONFIG)
+eye_tracker = EyeTracker(config=APP_CONFIG)
+audio_tracker = AudioTracker()
 
 @app.post("/api/proctor/eye-tracker")
-async def eye_tracker(file: UploadFile = File(...)):
+async def eye_analyzer(file: UploadFile = File(...)):
     """Receives binary image frames from webcam stream over HTTP POST"""
     try: 
         # read incoming bytes from payload 
@@ -50,3 +53,26 @@ async def eye_tracker(file: UploadFile = File(...)):
     except Exception as e: 
         return {"success": False, 
                 "error": f"Internal Server Exception: {str(e)}"}
+
+@app.post("/api/proctor/audio-tracker")
+async def audio_analyzer(file: UploadFile = File(...)):
+    """Received chunked microphone audio recording snippets."""
+    temp_path = f"incoming_{file.filename}"
+    try: 
+        # save incoming file onto server cache temporarily 
+        contents = await file.read()
+        with open(temp_path, "wb") as f: 
+            f.write(contents)
+        
+        # run it through audio pipeline 
+        result = audio_tracker.analyze_audio_chunk(temp_path)
+        return {"success": True, 
+                "result": result}
+    
+    except Exception as e:
+        return {"success": False, 
+                "error": str(e)}
+    finally:
+        # Keep the disk cache directory clean
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
