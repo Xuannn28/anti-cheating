@@ -106,7 +106,6 @@ class EyeTracker:
     
     def track_eyes(self, frame):
         try: 
-            self.active_alerts["EYES_CLOSED"] = False
             self.active_alerts["SCRIPT_READING"] = False
 
             # opencv read image in BGR color order 
@@ -120,32 +119,16 @@ class EyeTracker:
             # if candidate out of frame / cover the camera, it will be empty.
             # return the last known data 
             if not results.face_landmarks: 
-                return self.gaze_direction, self.eye_ratio
+                return {
+                    "gaze_direction": self.gaze_direction,
+                    "is_looking_away": self.gaze_direction != "center",
+                    "is_reading_script": False
+                }
             
             # grab the coordinate for first face detected 
             face_landmarks = results.face_landmarks[0]
-
             frame_h, frame_w = frame.shape[:2]
 
-            # DETECT BLINKS OR DROPPED LOOKS 
-            # mediapipe raw output are normalized decimal [0, 1]
-            # so, multiply by the camera width/height to get real screen pixel locations
-            left_eye_coords = np.array([(face_landmarks[i].x * frame_w, 
-                                         face_landmarks[i].y * frame_h) for i in self.LEFT_EYE_INDICES])
-            right_eye_coords = np.array([(face_landmarks[i].x * frame_w, 
-                                         face_landmarks[i].y * frame_h) for i in self.RIGHT_EYE_INDICES])
-            
-            # run EAR function on both eyes, then take average 
-            left_ear = self._calculate_ear(left_eye_coords)
-            right_ear = self._calculate_ear(right_eye_coords)
-            self.eye_ratio = (left_ear + right_ear) / 2.0 
-
-            # EAR drop below threshold
-            if self.eye_ratio < self.ear_threshold: 
-                self.active_alerts["EYES_CLOSED"] = True
-                if self.alert_logger: 
-                    self.alert_logger.log_alert("EYES_CLOSED", "Suspiscious activity detected (eye closed)")
-            
             # ACCURATE EYE BALL GAZE TRACKING 
             # find iris and corners positions on screen 
             inner_x = face_landmarks[self.LEFT_EYE_INNER_CORNER].x * frame_w
@@ -153,10 +136,11 @@ class EyeTracker:
             iris_x = face_landmarks[self.LEFT_IRIS_CENTER].x * frame_w
 
             total_eye_width = abs(outer_x - inner_x)
+
             if total_eye_width > 0: 
+
                 # 0 = iris at left corner; 0.5 = centered, 1 = iris at right corner
                 current_gaze_ratio = abs(iris_x - inner_x) / total_eye_width
-
                 self.gaze_history.append(current_gaze_ratio)
 
                 # map numerical boundaries into categorical directions 
@@ -191,13 +175,14 @@ class EyeTracker:
                             self.alert_logger.log_alert("SCRIPT_READING", "Sawtooth eye scanning pattern flagged")
                         self.gaze_changes = 0
 
+            # Determine explicit state flags
+            is_looking_away = self.gaze_direction != "center"
+            is_reading_script = self.active_alerts["SCRIPT_READING"]
+
             return {
                 "gaze_direction": self.gaze_direction,
-                "eye_ratio": round(float(self.eye_ratio), 2),
-                "alerts": {
-                    "eyes_closed": self.active_alerts["EYES_CLOSED"],
-                    "script_reading": self.active_alerts["SCRIPT_READING"]
-                }
+                "is_looking_away": is_looking_away,
+                "is_reading_script": is_reading_script
             }
         
         except Exception as e:
@@ -205,56 +190,64 @@ class EyeTracker:
                 self.alert_logger.log_alert("EYE_TRACKING_ERROR", f"Runtime exception: {str(e)}")
             return {
                 "gaze_direction": self.gaze_direction,
-                "eye_ratio": float(self.eye_ratio),
-                "alerts": {"eyes_closed": False, "script_reading": False},
+                "is_looking_away": self.gaze_direction != "center",
+                "is_reading_script": False,
                 "error": str(e)
-            }   
+            }
 
 if __name__ == "__main__": 
-    logger = AlertLogger()
-    tracker = EyeTracker(config=APP_CONFIG)
+# Mock AlertLogger class locally if it's not imported 
+    try:
+        from logger import AlertLogger
+        logger = AlertLogger()
+    except ImportError:
+        class MockLogger:
+            def log_alert(self, tag, msg): print(f"🚨 [ALERT LOG] {tag}: {msg}")
+        logger = MockLogger()
+
+    # Generic configuration dictionary matching APP_CONFIG structure
+    MOCK_CONFIG = {'detection': {'eyes': {'ear_threshold': 0.25}}}
+    
+    tracker = EyeTracker(config=MOCK_CONFIG)
     tracker.set_alert_logger(logger)
 
-    # fire up webcam num 0 (default laptop camera)
+    # Fire up webcam num 0 (default laptop camera)
     cap = cv2.VideoCapture(0)
-    print("Backend Active. Face the camera to initialize analysis. Press 'q' to stop.")
+    print("\nBackend Test Runner Active.")
+    print("Face the camera to validate eye movements. Press 'q' to stop.\n")
 
     while cap.isOpened(): 
         success, frame = cap.read() 
         if not success: 
             continue 
 
-        # shrink video image to 640x480 resolution 
+        # Shrink video image to 640x480 resolution to maintain real-time performance
         frame = cv2.resize(frame, (640, 480))
 
-        # run eye tracking function on current frame 
-        gaze_dir, ear_val = tracker.track_eyes(frame)
-
-        # text indicator on window frame 
-        cv2.putText(frame, f"Gaze: {gaze_dir.upper()}", (30, 40), cv2.FONT_HERSHEY_DUPLEX, 0.7, (0, 255, 0), 2)
-        cv2.putText(frame, f"EAR: {ear_val:.2f}", (30, 80), cv2.FONT_HERSHEY_DUPLEX, 0.7, (255, 0, 0), 2)
-
-        badge_y = 120  # Starting Y position for the first badge
+        # 🚀 FIX: Extract data cleanly from the updated dictionary response object
+        tracking_result = tracker.track_eyes(frame)
         
-        if tracker.active_alerts["EYES_CLOSED"]:
-            # Draw a solid red background rectangle
-            cv2.rectangle(frame, (30, badge_y), (230, badge_y + 35), (0, 0, 255), -1)
-            # Overlay white text on top of it
-            cv2.putText(frame, "SUS: EYES CLOSED", (40, badge_y + 25), cv2.FONT_HERSHEY_DUPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
-            badge_y += 45  # Shift down in case the next badge also triggers
-            
-        if tracker.active_alerts["SCRIPT_READING"]:
-            # Draw a solid orange background rectangle
+        gaze_dir = tracking_result["gaze_direction"]
+        is_looking_away = tracking_result["is_looking_away"]
+        is_reading_script = tracking_result["is_reading_script"]
+
+        # Text indicators on window frame 
+        cv2.putText(frame, f"Gaze: {gaze_dir.upper()}", (30, 40), cv2.FONT_HERSHEY_DUPLEX, 0.7, (0, 255, 0), 2)
+        cv2.putText(frame, f"Away?: {str(is_looking_away).upper()}", (30, 80), cv2.FONT_HERSHEY_DUPLEX, 0.7, (255, 0, 0), 2)
+
+        badge_y = 120  # Starting Y position for the first warning alert badge
+        
+        # Draw a solid orange background rectangle if sawtooth reading profile matches
+        if is_reading_script:
             cv2.rectangle(frame, (30, badge_y), (250, badge_y + 35), (0, 140, 255), -1)
-            # Overlay white text on top of it
             cv2.putText(frame, "SUS: SCRIPT READING", (40, badge_y + 25), cv2.FONT_HERSHEY_DUPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
             
-        # show video feed on window sceen 
-        cv2.imshow('Production Eye Tracker Validation', frame)
+        # Show live video overlay preview feed on your window screen 
+        cv2.imshow('Local Eye Tracker Dict Structure Validation', frame)
 
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
     
-    # release webcam hardware lock so other apps can use it
+    # Release hardware locks
     cap.release()
     cv2.destroyAllWindows()
