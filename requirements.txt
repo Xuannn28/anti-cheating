@@ -1,0 +1,12 @@
+
+# --- eye tracking pipeline ---
+mediapipe==0.10.14
+opencv-python==4.10.0.84
+numpy==1.26.4
+
+# --- Audio tracking pipeline ---
+pydub==0.25.1
+audioop-lts==0.2.1; python_version >= '3.13'
+faster-whisper==1.0.3
+torch==2.3.1
+transformers==4.41.2
