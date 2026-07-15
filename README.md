@@ -1,6 +1,6 @@
 # Multimodal AI Anti-Cheating System
 
-A real-time, local AI-powered proctoring system that combines computer vision and natural language processing (NLP) to detect suspicious behavioral patterns during remote online interview.
+A real-time, local AI-powered proctoring system that combines computer vision, natural language processing (NLP), and an offline RAG pipeline to detect suspicious behavioral patterns and manage intelligent, context-aware interview sessions.
 
 ---
 
@@ -11,6 +11,9 @@ A real-time, local AI-powered proctoring system that combines computer vision an
 - **Computer Vision:** MediaPipe Face Mesh, OpenCV-Python.
 - **Speech-to-Text (STT):** Faster-Whisper (via CTranslate2 engine) - Quantized local inference processing.
 - **Natural Language Processing (NLP):** Hugging Face Transformers (`GPT-2` model architecture).
+- **RAG Orchestration:** LangChain
+- **Vector Database:** ChromaDB
+- **Local Large Language Model:** Ollama runtime running `llama3.2:1b`
 - **Deep Learning Framework:** PyTorch (`torch`).
 - **Audio Processing Utilities:** Pydub, Audioop-lts (compatibility bridge for Python 3.13+).
 - **Core Numerics:** NumPy.
@@ -34,6 +37,11 @@ A real-time, local AI-powered proctoring system that combines computer vision an
 - **Localized Speech-to-Text (STT):** Implements OpenAI’s Whisper model via a quantized `faster-whisper` CTranslate2 wrapper to pull clean text transcripts directly on the CPU.
 - **Linguistic Predictability Analysis:** Feeds transcripts through a local Hugging Face Transformer language decoder (`GPT-2`) to determine cross-entropy loss metrics.
 - **Perplexity Detection:** Calculates statistical perplexity markers ($PPL = e^{\text{loss}}$) to instantly flag predictable structural patterns common in AI-generated helper scripts.
+
+### 3. Local Context Retrieval (RAG)
+- **Vector Indexing Pipeline**: Uses semantic embedding splits stored in an offline ChromaDB instance to manage organizational documents, rules, and interview questions.
+- **Candidate Operations Proctor (Chatbot)**: Operates on a dedicated prompt boundary layer to answer real-time candidate operational questions (e.g., system rules, Wi-Fi errors, gear compliance) while deflecting malicious exam cheating attempts.
+- **Automated Answer Assessment (Evaluator)**: Routes interview transcription output through a structured technical evaluation rubric template to score responses precisely on a 1-5 scale against target concept matrices.
 
 ---
 
@@ -74,14 +82,31 @@ cd anti-cheating-ai
 
 3. Add C:\ffmpeg\bin directly into your Windows User Environment Variables Path.
 
-### 3. Initialize Environment (Using Conda)
+### 3. Setup Ollama (Local LLM Execution Engine)
+1. Download and install the desktop engine from the official Ollama Webpage.
+
+2. Open a command prompt terminal and pull down your embedding model and primary inference models:
+
+```bash 
+ollama pull nomic-embed-text
+ollama pull llama3.2:1b
+```
+
+### 4. Initialize Environment (Using Conda)
 
 ```bash
 conda create -n anti-cheat python=3.13
 conda activate anti-cheat
 pip install -r requirements.txt
 ```
-### 4. Sensitivity Configuration 
+
+### 5. Document Indexing and ChromaDB Setup 
+
+```bash
+python rag_engine.py
+```
+ 
+### 6. Sensitivity Configuration 
 
 Edit config.py to balance your security layout and prevent false flags:
 
