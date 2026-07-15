@@ -10,3 +10,12 @@ audioop-lts==0.2.1; python_version >= '3.13'
 faster-whisper==1.0.3
 torch==2.3.1
 transformers==4.41.2
+
+# --- Local RAG Pipeline & Vector DB (NEW Additions) ---
+langchain-core>=0.3.0
+langchain-ollama>=0.2.0
+langchain-chroma>=0.1.4
+
+# --- Web Framework & API Server ---
+fastapi>=0.110.0
+python-multipart>=0.0.9

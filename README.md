@@ -48,7 +48,12 @@ anti-cheating-ai/
 ├── config.py           # Universal system sensitivity settings 
 ├── logger.py           # Diagnostic flag event recorder
 ├── requirements.txt    # System dependency manifest
-└── logs/               # Saved event behavior reports
+├── rag_engine.py       # Manages the document indexing and database setup
+├── rag_chat.py         # chatbot file for functionality testing
+│
+├── database/           # ChromaDB store vector here
+└── context_docs/       # PDF/TXT interview data
+    └── interview_questions.txt
 
 ```
 ---
