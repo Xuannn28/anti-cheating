@@ -12,6 +12,12 @@ from eye_tracker import EyeTracker
 from audio_tracker import AudioTracker
 from config import APP_CONFIG
 
+from langchain_ollama import ChatOllama, OllamaEmbeddings
+from langchain_chroma import Chroma
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.runnables import RunnablePassthrough
+from langchain_core.output_parsers import StrOutputParser
+
 # initialize web service 
 app = FastAPI(title="Anti-Cheating AI Proctoring Service")
 
@@ -26,7 +32,74 @@ app.add_middleware(
 
 # initialize engine 
 eye_tracker = EyeTracker(config=APP_CONFIG)
-audio_tracker = AudioTracker()
+audio_tracker = AudioTracker(config=APP_CONFIG)
+DB_DIR = "./database"
+embeddings = OllamaEmbeddings(model="nomic-embed-text")
+llm = ChatOllama(model="llama3.2:1b", temperature=0.2)
+
+# =======================================================
+# LOCAL RAG PIPELINE
+# =======================================================
+
+# load vector database 
+vectore_store = Chroma(
+    persist_directory=DB_DIR, 
+    embedding_function=embeddings
+)
+retriever = vectore_store.as_retriever(search_kwargs={"k": 2})  # retrieve top 2 similar answers
+
+# Format helper to clean up database outputs for the prompt
+def format_docs(docs):
+    return "\n\n".join(doc.page_content for doc in docs)
+
+# tell LLM how to act using our system guidelines 
+# context: the place where LangChain paste the matching paragraph from ChromaDB 
+
+# --- PIPELINE 1: The Live Chatbot Brain ---
+chatbot_instruction = (
+    "You are a helpful AI Proctor Assistant. Your job is to answer structural, operational, "
+    "and rule questions about the exam using ONLY the context provided below.\n"
+    "Be direct, polite, and brief. If the answer isn't in the context, say: "
+    "'I am sorry, I can only answer questions regarding exam rules and schedules.'\n\n"
+    "Context:\n{context}"
+)
+chatbot_prompt = ChatPromptTemplate.from_messages([
+    ("system", chatbot_instruction),
+    ("human", "{input}")
+])
+
+chatbot_chain = (
+    {"context": retriever | format_docs, "input": RunnablePassthrough()}
+    | chatbot_prompt
+    | llm
+    | StrOutputParser()
+)
+
+# --- PIPELINE 2: The Automated Evaluator Brain ---
+evaluator_instruction = (
+    "You are an expert Technical Interview Grading System. Your exclusive task is to evaluate "
+    "the candidate's transcript against the question rubrics found in the context documents.\n"
+    "Provide a detailed breakdown of their score (1-5 scale) based on the criteria profiles. "
+    "Highlight specific missing target concepts or explicit negative indicators.\n\n"
+    "Context:\n{context}"
+)
+evaluator_prompt = ChatPromptTemplate.from_messages([
+    ("system", evaluator_instruction),
+    ("human", "{input}")
+])
+# Clean LCEL pipeline tailored specifically for grading reports
+evaluator_chain = (
+    {"context": retriever | format_docs, "input": RunnablePassthrough()}
+    | evaluator_prompt
+    | llm
+    | StrOutputParser()
+)
+
+# =======================================================
+# SCHEMAS
+# =======================================================
+class ChatRequest(BaseModel):
+    user_message: str
 
 class StartSessionRequest(BaseModel):
     candidate_name: str
@@ -39,7 +112,7 @@ class InterviewSession:
         self.script_flags = 0
         self.audio_flags = 0 
         self.transcripts = []
-        self.lock = threading.lock()  # protects data when frames & audio arrive same time
+        self.lock = threading.Lock()  # protects data when frames & audio arrive same time
     
     def to_dict(self): 
         with self.lock: 
@@ -48,7 +121,7 @@ class InterviewSession:
                 "metrics": {
                     "gaze_looking_away_events": self.gaze_flags,
                     "gaze_reading_events": self.script_flags,
-                    "ai_generated_speech_events": self.ai_audio_flags,
+                    "ai_generated_speech_events": self.audio_flags,
                 },
                 "recent_transcripts": self.transcripts[-5:] # Last 5 text blocks
             }
@@ -131,7 +204,7 @@ async def audio_analyzer(session_id: str, file: UploadFile = File(...)):
         if session_id in ACTIVE_SESSIONS and result.get("is_ai_generated") == True:
             session = ACTIVE_SESSIONS[session_id]
             with session.lock:
-                session.ai_audio_flags += 1
+                session.audio_flags += 1
                 if result.get("transcript"):
                     session.transcripts.append(result["transcript"])
 
@@ -145,3 +218,44 @@ async def audio_analyzer(session_id: str, file: UploadFile = File(...)):
         # Keep the disk cache directory clean
         if os.path.exists(temp_path):
             os.remove(temp_path)
+
+# =======================================================
+# AUTOMATED ASSESSMENT EVALUATION ENDPOINT
+# =======================================================
+@app.post("/api/session/{session)id}/evaluate")
+async def evaluate_answer(session_id: str):
+    """Aggregates audio transcripts and pass to Ollama chain"""
+    if session_id not in ACTIVE_SESSIONS:
+        raise HTTPException(status_code=404, detail="Active interview session not found.")
+        
+    session = ACTIVE_SESSIONS[session_id]
+    
+    with session.lock:
+        if not session.transcripts:
+            return {
+                "status": "empty",
+                "message": "No answers have been transcribed or recorded yet during this session."
+            }
+        full_candidate_response = " ".join(session.transcripts)
+    
+    try: 
+        evaluation_report = evaluator_chain.invoke(full_candidate_response)
+        return {
+            "status": "success",
+            "candidate_name": session.candidate_name,
+            "evaluation": evaluation_report
+        }
+    except Exception as e: 
+        raise HTTPException(status_code=500, detail=f"Local RAG Execution Error: {str(e)}")
+
+# =======================================================
+# LIVE CHATBOT ENDPOINT (Interactive Q&A)
+# =======================================================
+@app.post("/api/session/chat")
+async def live_interview_chatbot(payload: ChatRequest):
+    """Allows the user to text the RAG engine like a regular chatbot during the test."""
+    try:
+        bot_response = chatbot_chain.invoke(payload.user_message)
+        return {"status": "success", "reply": bot_response}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
