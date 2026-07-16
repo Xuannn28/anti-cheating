@@ -13,6 +13,10 @@ embeddings = OllamaEmbeddings(model="nomic-embed-text")
 def index_all_documents(): 
     """Read content in DOCS_DIR, process, save into ChromaDB. """
 
+    # if os.path.exists(DB_DIR):
+    #     print(f"Cleaning existing database at '{DB_DIR}'...")
+    #     shutil.rmtree(DB_DIR)
+
     # collect markdown from directory
     all_markdown_text = ""
     print(f"Reading markdown files")
@@ -40,7 +44,7 @@ def index_all_documents():
     # chunks = splitter.split_documents(documents)
 
     headers_to_split = [
-        ("#", "Category"), 
+        ("#", "Section"), 
         ("##", "Topic"), 
         ("###", "SubTopic")
     ]
@@ -48,6 +52,20 @@ def index_all_documents():
     # keep header inside text so LLM can read
     md_splitter = MarkdownHeaderTextSplitter(headers_to_split_on=headers_to_split, strip_headers=False)
     chunks = md_splitter.split_text(all_markdown_text)
+
+    print("Injecting category metadata rules")
+    # Loop through chunks and dynamically assign the routing category filter
+    for chunk in chunks:
+        section_name = chunk.metadata.get("Section", "").lower()
+        
+        # Route to 'rules' if the section header mentions operations, regulations, or FAQs
+        if "operation" in section_name or "regulation" in section_name or "faq" in section_name or "guideline" in section_name:
+            chunk.metadata["category"] = "rules"
+        # Route everything else (like Engineering Matrix or Interview Matrix) to 'rubrics'
+        else:
+            chunk.metadata["category"] = "rubrics"
+            
+        print(f"-> Chunk tagged | Category: {chunk.metadata['category']} | Header: {chunk.metadata.get('Section')}")
 
     print("Convert to token embedding and save to vector database")
     vectore_store = Chroma.from_documents(

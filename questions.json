@@ -1,0 +1,18 @@
+[
+  {
+    "title": "Behavioral Conflict & Resolution",
+    "description": "Describe a time you had a major technical disagreement with a team member. What was the engineering core conflict, and how did you resolve it?"
+  },
+  {
+    "title": "Python Memory & Architecture Structures",
+    "description": "Explain Python's Global Interpreter Lock (GIL) and Generational Garbage Collection mechanisms. How do they affect cross-thread scaling?"
+  },
+  {
+    "title": "Database Optimization Strategies",
+    "description": "Explain the difference between clustered and non-clustered indexes. How would you diagnose and optimize a slow-running SQL query?"
+  },
+  {
+    "title": "REST vs. GraphQL",
+    "description": "Compare REST APIs with GraphQL architectures. Under what specific project requirements would you choose one paradigm over the other?"
+  }
+]

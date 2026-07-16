@@ -2,11 +2,15 @@ import os
 import cv2 
 import numpy as np 
 import threading
+import tempfile
 import uuid
+import json
+import random
 from typing import Dict
 from pydantic import BaseModel
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+import uvicorn
 
 from eye_tracker import EyeTracker
 from audio_tracker import AudioTracker
@@ -35,7 +39,7 @@ eye_tracker = EyeTracker(config=APP_CONFIG)
 audio_tracker = AudioTracker(config=APP_CONFIG)
 DB_DIR = "./database"
 embeddings = OllamaEmbeddings(model="nomic-embed-text")
-llm = ChatOllama(model="llama3.2:1b", temperature=0.2)
+llm = ChatOllama(model="llama3.2:1b", temperature=0.0)
 
 # =======================================================
 # LOCAL RAG PIPELINE
@@ -46,7 +50,22 @@ vectore_store = Chroma(
     persist_directory=DB_DIR, 
     embedding_function=embeddings
 )
-retriever = vectore_store.as_retriever(search_kwargs={"k": 2})  # retrieve top 2 similar answers
+
+# 1. Chatbot Retriever
+chatbot_retriever = vectore_store.as_retriever(
+    search_kwargs={
+        "k": 3,
+        "filter": {"category": "rules"}  # Enforces rules-only matching
+    }
+)
+
+# 2. Evaluator Retriever
+evaluator_retriever = vectore_store.as_retriever(
+    search_kwargs={
+        "k": 3,
+        "filter": {"category": "rubrics"}  # Enforces rubric-only matching
+    }
+)
 
 # Format helper to clean up database outputs for the prompt
 def format_docs(docs):
@@ -57,10 +76,9 @@ def format_docs(docs):
 
 # --- PIPELINE 1: The Live Chatbot Brain ---
 chatbot_instruction = (
-    "You are a helpful AI Proctor Assistant. Your job is to answer structural, operational, "
-    "and rule questions about the exam using ONLY the context provided below.\n"
-    "Be direct, polite, and brief. If the answer isn't in the context, say: "
-    "'I am sorry, I can only answer questions regarding exam rules and schedules.'\n\n"
+    "You are a literal, rule-bound AI Proctor. You understand and speak ONLY English.\n"
+    "CRITICAL: If the input query is unclear, fragmented, or contains garbage speech, reply exactly with: "
+    "'I am sorry, I can only answer clear questions regarding exam rules and schedules.'\n\n"
     "Context:\n{context}"
 )
 chatbot_prompt = ChatPromptTemplate.from_messages([
@@ -69,7 +87,7 @@ chatbot_prompt = ChatPromptTemplate.from_messages([
 ])
 
 chatbot_chain = (
-    {"context": retriever | format_docs, "input": RunnablePassthrough()}
+    {"context": chatbot_retriever | format_docs, "input": RunnablePassthrough()}
     | chatbot_prompt
     | llm
     | StrOutputParser()
@@ -77,10 +95,12 @@ chatbot_chain = (
 
 # --- PIPELINE 2: The Automated Evaluator Brain ---
 evaluator_instruction = (
-    "You are an expert Technical Interview Grading System. Your exclusive task is to evaluate "
-    "the candidate's transcript against the question rubrics found in the context documents.\n"
-    "Provide a detailed breakdown of their score (1-5 scale) based on the criteria profiles. "
-    "Highlight specific missing target concepts or explicit negative indicators.\n\n"
+    "You are an automated grading script. You operate strictly in English.\n"
+    "Examine the input candidate transcript text against the provided grading rubrics.\n\n"
+    "CRITICAL BEHAVIOR FOR FRAGMENTED/POOR INPUTS:\n"
+    "If the transcript contains garbage data, disconnected characters, or is fewer than 8 words, "
+    "do not attempt to analyze it. Output a structural report with a Score of 1/5 and state: "
+    "'Evaluation Failed: The captured audio transcript was too brief or unintelligible to satisfy rubric concepts.'\n\n"
     "Context:\n{context}"
 )
 evaluator_prompt = ChatPromptTemplate.from_messages([
@@ -89,7 +109,7 @@ evaluator_prompt = ChatPromptTemplate.from_messages([
 ])
 # Clean LCEL pipeline tailored specifically for grading reports
 evaluator_chain = (
-    {"context": retriever | format_docs, "input": RunnablePassthrough()}
+    {"context": evaluator_retriever | format_docs, "input": RunnablePassthrough()}
     | evaluator_prompt
     | llm
     | StrOutputParser()
@@ -112,6 +132,7 @@ class InterviewSession:
         self.script_flags = 0
         self.audio_flags = 0 
         self.transcripts = []
+        self.assigned_topics = []
         self.lock = threading.Lock()  # protects data when frames & audio arrive same time
     
     def to_dict(self): 
@@ -147,6 +168,38 @@ async def get_live_status(session_id: str):
         raise HTTPException(status_code=404, detail="Session expired or not found")
     return ACTIVE_SESSIONS[session_id].to_dict()
 
+# Helper to safely load questions from your new file
+def load_question_bank():
+    try:
+        with open("questions.json", "r") as f:
+            return json.load(f)
+    except Exception:
+        # Fallback safeguard if the JSON file is missing or corrupted
+        return [
+            {"title": "Default Topic A", "description": "Explain Python's GIL mechanism."},
+            {"title": "Default Topic B", "description": "Describe a technical disagreement you resolved."}
+        ]
+
+@app.get("/api/session/{session_id}/topics")
+async def get_exam_topics(session_id: str):
+    """Selects and locks in random exam questions from the file bank for this session."""
+    if session_id not in ACTIVE_SESSIONS:
+        raise HTTPException(status_code=404, detail="Session expired or not found")
+        
+    session = ACTIVE_SESSIONS[session_id]
+    
+    with session.lock:
+        # If topics haven't been picked for this candidate yet, pick them now!
+        if not session.assigned_topics:
+            question_bank = load_question_bank()
+            
+            # Dynamically pull exactly 1 random question from the bank
+            if question_bank:
+                session.assigned_topics = random.sample(question_bank, k=1)
+            else:
+                session.assigned_topics = [{"title": "Default Topic", "description": "Please explain your technical background."}]
+            
+        return {"topics": session.assigned_topics}
 # =======================================================
 # ANALYZER ENDPOINTS 
 # =======================================================
@@ -190,8 +243,12 @@ async def eye_analyzer(session_id: str, file: UploadFile = File(...)):
 
 @app.post("/api/proctor/audio-tracker")
 async def audio_analyzer(session_id: str, file: UploadFile = File(...)):
-    """Received chunked microphone audio recording snippets."""
-    temp_path = f"incoming_{file.filename}"
+    """Received chunked microphone audio recording snippets safely in temp directory."""
+    
+    # FIX: Save the temporary file to the OS temp folder, NOT the project directory
+    temp_dir = tempfile.gettempdir()
+    temp_path = os.path.join(temp_dir, f"incoming_{session_id}_{file.filename}")
+    
     try: 
         # save incoming file onto server cache temporarily 
         contents = await file.read()
@@ -201,19 +258,26 @@ async def audio_analyzer(session_id: str, file: UploadFile = File(...)):
         # run it through audio pipeline 
         result = audio_tracker.analyze_audio_chunk(temp_path)
 
-        if session_id in ACTIVE_SESSIONS and result.get("is_ai_generated") == True:
+        if session_id in ACTIVE_SESSIONS:
             session = ACTIVE_SESSIONS[session_id]
             with session.lock:
-                session.audio_flags += 1
-                if result.get("transcript"):
-                    session.transcripts.append(result["transcript"])
+                # Flag metric if AI characteristics are detected
+                if result.get("is_ai_generated") == True:
+                    session.audio_flags += 1
+                
+                raw_transcript = result.get("transcript", "").strip()
+                
+                # Always record the transcript if speech is detected
+                if raw_transcript and len(raw_transcript.split()) > 2:
+                    session.transcripts.append(raw_transcript)
+                    print(f"[Audio Log] Valid transcript saved: {raw_transcript}")
+                else:
+                    print(f"[Audio Log] Dropped low-quality/fragmented audio text chunk.")
 
-        return {"success": True, 
-                "result": result}
+        return {"success": True, "result": result}
     
     except Exception as e:
-        return {"success": False, 
-                "error": str(e)}
+        return {"success": False, "error": str(e)}
     finally:
         # Keep the disk cache directory clean
         if os.path.exists(temp_path):
@@ -222,7 +286,7 @@ async def audio_analyzer(session_id: str, file: UploadFile = File(...)):
 # =======================================================
 # AUTOMATED ASSESSMENT EVALUATION ENDPOINT
 # =======================================================
-@app.post("/api/session/{session)id}/evaluate")
+@app.post("/api/session/{session_id}/evaluate")
 async def evaluate_answer(session_id: str):
     """Aggregates audio transcripts and pass to Ollama chain"""
     if session_id not in ACTIVE_SESSIONS:
@@ -259,3 +323,10 @@ async def live_interview_chatbot(payload: ChatRequest):
         return {"status": "success", "reply": bot_response}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    
+
+# =======================================================
+# MAIN RUNNER (Added to allow execution via `python app.py`)
+# =======================================================
+if __name__ == "__main__":
+    uvicorn.run("app:app", host="127.0.0.1", port=8000, reload=True)

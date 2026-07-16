@@ -2,6 +2,7 @@
 import os 
 import torch 
 import numpy as np
+import tempfile
 from config import APP_CONFIG
 from pydub import AudioSegment
 from faster_whisper import WhisperModel  # OpenAI speech2text model
@@ -33,7 +34,8 @@ class AudioTracker:
     
     def analyze_audio_chunk(self, raw_audio_path):
         """Processes audio chunk: convert , transcribe, and scores perplexity"""
-        temp_wav = "processed_chunk.wav"
+        temp_dir = tempfile.gettempdir()
+        temp_wav = os.path.join(temp_dir, f"processed_chunk_{os.path.basename(raw_audio_path)}.wav")
         try: 
             # convert format 
             self._convert_to_wav(raw_audio_path, temp_wav)
