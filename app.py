@@ -75,12 +75,16 @@ def format_docs(docs):
 # context: the place where LangChain paste the matching paragraph from ChromaDB 
 
 # --- PIPELINE 1: The Live Chatbot Brain ---
+# --- PIPELINE 1: The Live Chatbot Brain ---
 chatbot_instruction = (
-    "You are a literal, rule-bound AI Proctor. You understand and speak ONLY English.\n"
-    "CRITICAL: If the input query is unclear, fragmented, or contains garbage speech, reply exactly with: "
+    "You are a helpful AI Proctor Assistant. You answer questions using ONLY the context below.\n"
+    "Rules:\n"
+    "1. Provide a direct, short answer based on the Context.\n"
+    "2. If the context does not contain the answer, reply exactly with: "
     "'I am sorry, I can only answer clear questions regarding exam rules and schedules.'\n\n"
     "Context:\n{context}"
 )
+
 chatbot_prompt = ChatPromptTemplate.from_messages([
     ("system", chatbot_instruction),
     ("human", "{input}")
@@ -95,17 +99,19 @@ chatbot_chain = (
 
 # --- PIPELINE 2: The Automated Evaluator Brain ---
 evaluator_instruction = (
-    "You are an automated grading script. You operate strictly in English.\n"
-    "Examine the input candidate transcript text against the provided grading rubrics.\n\n"
-    "CRITICAL BEHAVIOR FOR FRAGMENTED/POOR INPUTS:\n"
-    "If the transcript contains garbage data, disconnected characters, or is fewer than 8 words, "
-    "do not attempt to analyze it. Output a structural report with a Score of 1/5 and state: "
-    "'Evaluation Failed: The captured audio transcript was too brief or unintelligible to satisfy rubric concepts.'\n\n"
-    "Context:\n{context}"
+    "You are an objective Technical Interview Assessment Bot.\n"
+    "Your ONLY job is to grade the Candidate's Input Response using the context rubrics provided.\n\n"
+    "EVALUATION INSTRUCTIONS:\n"
+    "1. Read the text inside <candidate_response>.\n"
+    "2. Compare it against the technical concept expectations found in the Context Rubrics.\n"
+    "3. Provide a clear numerical score out of 5 (e.g., Score: X/5).\n"
+    "4. Detail what technical keywords were missing or correctly used.\n"
+    "5. CRITICAL: Do not describe the API layout, code, or endpoints. Focus entirely on the candidate's technical explanation.\n\n"
+    "Context Rubrics:\n{context}\n"
 )
 evaluator_prompt = ChatPromptTemplate.from_messages([
     ("system", evaluator_instruction),
-    ("human", "{input}")
+    ("human", "<candidate_response>\n{input}\n</candidate_response>")
 ])
 # Clean LCEL pipeline tailored specifically for grading reports
 evaluator_chain = (
@@ -319,11 +325,29 @@ async def evaluate_answer(session_id: str):
 async def live_interview_chatbot(payload: ChatRequest):
     """Allows the user to text the RAG engine like a regular chatbot during the test."""
     try:
+        # 1. Retrieve the matching chunks manually so we can inspect the generated text layout
+        docs = chatbot_retriever.invoke(payload.user_message)
+        formatted_context = format_docs(docs)
+        
+        # 2. Format the prompt explicitly into standard message structures for tracking
+        actual_prompt_messages = chatbot_prompt.format_messages(
+            context=formatted_context, 
+            input=payload.user_message
+        )
+        # Convert it cleanly to readable text lines
+        readable_prompt_log = "\n".join([msg.content for msg in actual_prompt_messages])
+
+        # 3. Run the invocation chain layout
         bot_response = chatbot_chain.invoke(payload.user_message)
-        return {"status": "success", "reply": bot_response}
+        
+        return {
+            "status": "success", 
+            "reply": bot_response, 
+            "debug_prompt_sent": readable_prompt_log, # Returns exact text fed to Ollama
+            "retrieved_chunks_count": len(docs)
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-    
 
 # =======================================================
 # MAIN RUNNER (Added to allow execution via `python app.py`)

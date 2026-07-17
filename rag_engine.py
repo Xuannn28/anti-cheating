@@ -13,9 +13,9 @@ embeddings = OllamaEmbeddings(model="nomic-embed-text")
 def index_all_documents(): 
     """Read content in DOCS_DIR, process, save into ChromaDB. """
 
-    # if os.path.exists(DB_DIR):
-    #     print(f"Cleaning existing database at '{DB_DIR}'...")
-    #     shutil.rmtree(DB_DIR)
+    if os.path.exists(DB_DIR):
+        print(f"Cleaning existing database at '{DB_DIR}'...")
+        shutil.rmtree(DB_DIR)
 
     # collect markdown from directory
     all_markdown_text = ""
